@@ -22,7 +22,7 @@ class Timescale(models.AbstractModel):
     _register = False  # not visible in ORM registry, meant to be python-inherited only
     _abstract = False  # not abstract
     _transient = False  # not transient
-    _sql_partition_key = []  #: SQL _sql_partition_key [field_name, field_name] required,
+    _sql_partition_key = None  #: SQL _sql_partition_key field_name required,
 
     def _check_hypertable_exist(self):
         """
@@ -41,9 +41,9 @@ class Timescale(models.AbstractModel):
                 SELECT EXISTS (
                     SELECT 1 s
                     FROM _timescaledb_catalog.hypertable 
-                    WHERE table_name = '${self._table}'
+                    WHERE table_name = '{self._table}'
                 )
-                
+
             """
         cr.execute(query)
         query_fetch = cr.fetchall()
@@ -51,7 +51,7 @@ class Timescale(models.AbstractModel):
 
     def _check_field_type_for_partition_key(self, field_name):
         """
-        Checks if the field in the list of _sql_partition_key is of type timestamp.
+        Checks if the field in the  of _sql_partition_key is of type timestamp.
 
         Returns:
             bool: True if the field is of type timestamp.
@@ -60,7 +60,7 @@ class Timescale(models.AbstractModel):
             ValueError: If the field is not of type timestamp.
         TODO: I don't know how he behaves with the inheritance
         """
-        if field_name not in self._fields or field_name not in self._sql_partition_key:
+        if field_name not in self._fields or field_name is not self._sql_partition_key:
             raise ValueError(f"'{field_name}' is not a valid partition key")
 
         field = self._fields.get(field_name)
@@ -70,22 +70,50 @@ class Timescale(models.AbstractModel):
         """
         Synchronize the database hypertable's partition key with the one specified
         in _sql_partition_key.
-        Raises:
-            ValueError: if _sql_partition_key does not exist or is empaty
-
         Returns:
             None
+
+        Raises:
+            ValueError: if _sql_partition_key does not exist or is empaty
         """
-        cr = self._crs
+        if self._abstract:
+            return
+
         if not self._sql_partition_key:
             raise ValueError(f"The _sql_partition_key is either missing.")
 
-        for field_name in self._sql_partition_key:
-            self._check_field_type_for_partition_key(field_name)
+        self._check_field_type_for_partition_key(self._sql_partition_key)
+
+        if not self._check_hypertable_exist():
+            self._creat_hypertable(self._sql_partition_key)
+
+    def _creat_hypertable(self, column):
+        """
+        Create a hypertable for Model,
+        Args:
+            columns (str): A str of column name to include in the hypertable.
+        Raises:
+            ValueError: If the `column` is empty or contains invalid column names.
+        TODO Error: migrate_data if existing data
+        """
+        if self._abstract:
+            return
+
+        if not column:
+            raise ValueError("The 'column' cannot be empty.")
+
+        # Validate the column names (you may add more validation logic here)
+        if not isinstance(column, str):
+            raise ValueError(f"Invalid column names: {column}")
+
+        cr = self._cr
+
+        # info https://docs.timescale.com/api/latest/hypertable/create_hypertable/
+        query = f"SELECT create_hypertable('{self._table}', '{column}');"
+        cr.execute(query)
+        query_fetch = cr.fetchall()
 
     def init(self):
         if self._abstract:
             return
-
-        if not self._check_hypertable_exist():
-            self._sync_partition_key_to_database()
+        self._sync_partition_key_to_database()
